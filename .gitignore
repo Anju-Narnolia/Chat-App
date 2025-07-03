@@ -1,0 +1,89 @@
+# Node dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented libs
+lib-cov/
+
+# Coverage directory
+coverage/
+*.lcov
+
+# Dependency directories
+bower_components/
+jspm_packages/
+web_modules/
+
+# Compiled binary addons
+build/Release/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm/yarn/pnpm cache
+.npm/
+.yarn/
+.pnpm-debug.log*
+.yarn-debug.log*
+.yarn-error.log*
+lerna-debug.log*
+
+# dotenv environment variable files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Output of 'npm pack'
+*.tgz
+
+# Next.js build output
+.next/
+out/
+dist/
+build/
+
+# Parcel cache
+.cache/
+.parcel-cache/
+
+# Gatsby files
+.cache/
+public/
+
+# Nuxt.js build output
+.nuxt/
+dist/
+
+# Storybook build outputs
+.out/
+storybook-static/
+.storybook-out/
+
+# Optional REPL history
+.node_repl_history
+
+# Eslint/Stylelint cache
+.eslintcache
+.stylelintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_*
+
+# Temporary folders
+tmp/
+temp/
+
+# Yarn Integrity file
+.yarn-integrity
