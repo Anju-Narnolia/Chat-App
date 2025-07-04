@@ -60,11 +60,15 @@ import { useRouter } from "next/navigation";
 import { CreateGroupDialog } from "./create-group-dialog";
 import { GroupSettingsDialog } from "./group-settings-dialog";
 
-function getDirectChatDisplay(conversation, users, currentUser) {
+function getDirectChatDisplay(
+  conversation: Conversation,
+  users: User[],
+  currentUser: User | null
+) {
   if (conversation.isGroup) {
     return { name: conversation.name, image: conversation.image };
   }
-  const otherUserId = conversation.participantIds.find(id => id !== currentUser?.id);
+  const otherUserId = conversation.participantIds.find((id: string) => id !== currentUser?.id);
   const otherUser = users.find(u => u.id === otherUserId);
   return {
     name: otherUser?.name || 'Unknown',
@@ -228,6 +232,9 @@ export function ChatView({ users }: { users: User[] }) {
   const [isSearching, setIsSearching] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isCallPanelOpen, setIsCallPanelOpen] = useState(false);
+  const [isRinging, setIsRinging] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
@@ -236,6 +243,10 @@ export function ChatView({ users }: { users: User[] }) {
     () => users.filter((user) => user.id !== currentUser?.id),
     [users, currentUser]
   );
+
+  const selectedConversationDisplay = selectedConversation
+    ? getDirectChatDisplay(selectedConversation, users, currentUser)
+    : { name: '', image: '' };
 
   // Load conversations on mount
   useEffect(() => {
@@ -248,18 +259,13 @@ export function ChatView({ users }: { users: User[] }) {
         setConversations(conversationsData);
       } catch (error) {
         console.error("Error loading conversations:", error);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to load conversations",
-        });
       } finally {
         setIsLoading(false);
       }
     };
 
     loadConversations();
-  }, [currentUser, toast]);
+  }, [currentUser]);
 
   // Load messages when conversation is selected
   useEffect(() => {
@@ -275,11 +281,6 @@ export function ChatView({ users }: { users: User[] }) {
         setMessages(messagesData);
       } catch (error) {
         console.error("Error loading messages:", error);
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Failed to load messages",
-        });
       } finally {
         setIsLoadingMessages(false);
       }
@@ -289,7 +290,7 @@ export function ChatView({ users }: { users: User[] }) {
     if (users.length > 0) {
       loadMessages();
     }
-  }, [selectedConversation, users, toast]);
+  }, [selectedConversation, users]);
 
   // Search users with debouncing
   useEffect(() => {
@@ -320,6 +321,16 @@ export function ChatView({ users }: { users: User[] }) {
       }
     };
   }, [searchTerm, currentUser]);
+
+  // Play/stop ringtone logic
+  useEffect(() => {
+    if (isRinging) {
+      audioRef.current?.play();
+    } else {
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.currentTime = 0;
+    }
+  }, [isRinging]);
 
   const handleSelectUser = async (user: User) => {
     if (!currentUser || isLoading) return;
@@ -449,8 +460,10 @@ export function ChatView({ users }: { users: User[] }) {
     }
   };
 
+  // Simulate call flow for demo (replace with real signaling logic)
   const handleStartCall = async (video: boolean) => {
     if (!selectedConversation || !currentUser) return;
+    setIsRinging(true); // Start ringing for outgoing call
 
     if (window.location.pathname.startsWith("/dashboard/call/")) {
       toast({
@@ -489,6 +502,22 @@ export function ChatView({ users }: { users: User[] }) {
         description: "Could not start the call. Please try again.",
       });
     }
+
+    // After call is answered (simulate with timeout for now):
+    setTimeout(() => {
+      setIsRinging(false);
+      setIsCallPanelOpen(true);
+    }, 3000); // Simulate 3s ring, replace with real answer event
+  };
+
+  const handleAnswerCall = () => {
+    setIsRinging(false);
+    setIsCallPanelOpen(true);
+  };
+
+  const handleEndCall = () => {
+    setIsCallPanelOpen(false);
+    setIsRinging(false);
   };
 
   const formatTimestamp = (timestamp: Date | undefined) => {
@@ -649,12 +678,9 @@ export function ChatView({ users }: { users: User[] }) {
           {/* Header */}
           <div className="flex items-center justify-between border-b p-3 flex-shrink-0">
             <div className="flex items-center gap-3">
-              <ConversationAvatar
-                conversation={{ ...selectedConversation, name: getDirectChatDisplay(selectedConversation, users, currentUser).name, image: getDirectChatDisplay(selectedConversation, users, currentUser).image }}
-                users={users}
-              />
+              <ConversationAvatar conversation={{ ...selectedConversation, name: selectedConversationDisplay.name, image: selectedConversationDisplay.image }} users={users} />
               <div>
-                <p className="font-semibold">{getDirectChatDisplay(selectedConversation, users, currentUser).name}</p>
+                <p className="font-semibold">{selectedConversationDisplay.name}</p>
                 <p className="text-xs text-muted-foreground">
                   {selectedConversation.isGroup
                     ? `${selectedConversation.participantIds.length} members`
@@ -679,6 +705,7 @@ export function ChatView({ users }: { users: User[] }) {
                 size="icon"
                 onClick={() => handleStartCall(false)}
                 disabled={isLoading}
+                className="transition-colors hover:bg-primary/10"
               >
                 <Phone className="h-5 w-5" />
               </Button>
@@ -687,6 +714,7 @@ export function ChatView({ users }: { users: User[] }) {
                 size="icon"
                 onClick={() => handleStartCall(true)}
                 disabled={isLoading}
+                className="transition-colors hover:bg-primary/10"
               >
                 <Video className="h-5 w-5" />
               </Button>
@@ -720,6 +748,28 @@ export function ChatView({ users }: { users: User[] }) {
               </DropdownMenu>
             </div>
           </div>
+
+          {/* Call Panel (show when call is active) */}
+          {isCallPanelOpen && (
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black bg-opacity-70">
+              <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-8 flex flex-col items-center">
+                <p className="text-lg font-bold mb-4">Call in Progress</p>
+                <div className="flex gap-4 mb-4">
+                  <Button onClick={handleEndCall} className="bg-red-500 hover:bg-red-600 text-white">End Call</Button>
+                  {/* Add mute, video toggle, etc. here */}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Incoming call notification (simulate for demo) */}
+          {isRinging && !isCallPanelOpen && (
+            <div className="fixed top-8 left-1/2 -translate-x-1/2 z-50 bg-white dark:bg-gray-900 border rounded-lg shadow-lg px-6 py-4 flex items-center gap-4">
+              <span className="font-semibold">Ringing...</span>
+              <Button onClick={handleAnswerCall} className="bg-green-500 hover:bg-green-600 text-white">Answer</Button>
+              <Button onClick={handleEndCall} className="bg-red-500 hover:bg-red-600 text-white">Decline</Button>
+            </div>
+          )}
 
           {/* Messages Area - Only This Scrolls */}
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
@@ -897,6 +947,9 @@ export function ChatView({ users }: { users: User[] }) {
           <p>Choose someone from your contacts to start chatting.</p>
         </div>
       )}
+
+      {/* Ringtone audio element (hidden) */}
+      <audio ref={audioRef} src="/sound/ringtone.wav" loop style={{ display: 'none' }} />
     </div>
   );
 }
