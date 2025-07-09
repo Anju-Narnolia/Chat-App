@@ -39,7 +39,7 @@ export function useCalls() {
 
     const interval = setInterval(pollForCalls, 5000); // Poll every 5 seconds
     return () => clearInterval(interval);
-  }, [currentUser, incomingCall, toast]);
+  }, [currentUser, incomingCall]);
 
   // Accept incoming call
   const acceptCall = useCallback(async (callId: string) => {
@@ -79,13 +79,13 @@ export function useCalls() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser, toast]);
+  }, [currentUser]);
 
   // Decline incoming call
   const declineCall = useCallback(async (callId: string) => {
     setIsLoading(true);
     try {
-      await updateCallStatusAction({ callId, status: 'declined' });
+      await updateCallStatusAction({ callId, status: 'rejected' });
       setIncomingCall(null);
       
       toast({
@@ -102,7 +102,7 @@ export function useCalls() {
     } finally {
       setIsLoading(false);
     }
-  }, [toast]);
+  }, []);
 
   // End active call
   const endCall = useCallback(async (callId: string) => {
@@ -137,7 +137,7 @@ export function useCalls() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser, toast]);
+  }, [currentUser]);
 
   // Join call (for participants)
   const joinCall = useCallback(async (callId: string) => {
@@ -174,7 +174,7 @@ export function useCalls() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser, toast]);
+  }, [currentUser]);
 
   // Leave call
   const leaveCall = useCallback(async (callId: string) => {
@@ -206,7 +206,7 @@ export function useCalls() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentUser, toast]);
+  }, [currentUser]);
 
   return {
     incomingCall,

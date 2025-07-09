@@ -157,7 +157,7 @@ export function LeaveManagement() {
         } finally {
             setIsLoading(false);
         }
-    }, [user, toast]);
+    }, [user]);
 
     React.useEffect(() => {
         loadData();
@@ -169,11 +169,11 @@ export function LeaveManagement() {
         setIsSubmitting(true);
         try {
             const result = await createLeaveRequestAction(user.id, data);
-            if (result.error) {
+            if (!result.success) {
                 toast({
                     variant: "destructive",
                     title: "Error",
-                    description: result.error,
+                    description: "Failed to submit leave request. Please try again.",
                 });
             } else {
                 toast({
@@ -200,11 +200,11 @@ export function LeaveManagement() {
 
         try {
             const result = await updateLeaveRequestStatusAction(leaveId, status, user.id, rejectionReason);
-            if (result.error) {
+            if (!result.success) {
                 toast({
                     variant: "destructive",
                     title: "Error",
-                    description: result.error,
+                    description: "Failed to update leave request. Please try again.",
                 });
             } else {
                 toast({
@@ -217,7 +217,7 @@ export function LeaveManagement() {
             toast({
                 variant: "destructive",
                 title: "Error",
-                description: `Failed to ${status} leave request. Please try again.`,
+                description: "Failed to update leave request. Please try again.",
             });
         }
     };
@@ -468,8 +468,8 @@ export function LeaveManagement() {
                                                     {request.leaveType.charAt(0).toUpperCase() + request.leaveType.slice(1)} Leave
                                                 </CardTitle>
                                                 <CardDescription>
-                                                    {format(request.startDate instanceof Date ? request.startDate : request.startDate.toDate(), "PPP")} - {format(request.endDate instanceof Date ? request.endDate : request.endDate.toDate(), "PPP")}
-                                                    {" · "}{differenceInDays(request.endDate instanceof Date ? request.endDate : request.endDate.toDate(), request.startDate instanceof Date ? request.startDate : request.startDate.toDate()) + 1} days
+                                                    {format(request.startDate instanceof Date ? request.startDate : new Date(request.startDate), "PPP")} - {format(request.endDate instanceof Date ? request.endDate : new Date(request.endDate), "PPP")}
+                                                    {" · "}{differenceInDays(request.endDate instanceof Date ? request.endDate : new Date(request.endDate), request.startDate instanceof Date ? request.startDate : new Date(request.startDate)) + 1} days
                                                 </CardDescription>
                                             </div>
                                             <Badge className={statusColors[request.status]} variant="secondary">
@@ -522,8 +522,8 @@ export function LeaveManagement() {
                                                 {request.leaveType.charAt(0).toUpperCase() + request.leaveType.slice(1)} Leave
                                             </CardTitle>
                                             <CardDescription>
-                                                {format(request.startDate instanceof Date ? request.startDate : request.startDate.toDate(), "PPP")} - {format(request.endDate instanceof Date ? request.endDate : request.endDate.toDate(), "PPP")}
-                                                {" · "}{differenceInDays(request.endDate instanceof Date ? request.endDate : request.endDate.toDate(), request.startDate instanceof Date ? request.startDate : request.startDate.toDate()) + 1} days
+                                                {format(request.startDate instanceof Date ? request.startDate : new Date(request.startDate), "PPP")} - {format(request.endDate instanceof Date ? request.endDate : new Date(request.endDate), "PPP")}
+                                                {" · "}{differenceInDays(request.endDate instanceof Date ? request.endDate : new Date(request.endDate), request.startDate instanceof Date ? request.startDate : new Date(request.startDate)) + 1} days
                                             </CardDescription>
                                         </div>
                                         <Badge className={statusColors[request.status]} variant="secondary">

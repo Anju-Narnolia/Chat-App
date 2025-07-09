@@ -279,7 +279,7 @@ export function WorkTracker() {
     };
     
     fetchInitialState();
-  }, [user, toast, getLocalStorageKey]);
+  }, [user, getLocalStorageKey]);
 
   React.useEffect(() => {
     if (!user || status === "loading") return;

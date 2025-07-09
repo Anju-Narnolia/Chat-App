@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -10,14 +9,12 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, LoaderCircle, Disc, Users, Clock, X, UserPlus, ScreenShare, ScreenShareOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '../auth/auth-provider';
-import { updateCallStatusAction, updateActiveParticipantsAction, removeParticipantAction, addParticipantAction, getCloudinarySignatureAction, saveRecordingAction, updateScreenShareStatusAction, updateRecordingStatusAction } from '@/app/dashboard/actions';
-// Firebase imports removed - will be replaced with MongoDB logic
+import { updateCallStatusAction, updateActiveParticipantsAction, removeParticipantAction, addParticipantAction, getCloudinarySignatureAction, saveRecordingAction, updateScreenShareStatusAction, updateRecordingStatusAction, createSignalingSessionAction, addIceCandidateAction, getSignalingSessionAction, getIceCandidatesAction, cleanupSignalingSessionAction } from '@/app/dashboard/actions';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-
 
 const formatDuration = (seconds: number) => {
   if (isNaN(seconds) || seconds < 0) return '00:00';
@@ -197,6 +194,58 @@ function ParticipantsPanel({ call, localUser, onRemove, removingId, allUsers, on
   );
 }
 
+// MongoDB-based signaling with polling (replaces Firebase real-time listeners)
+const useSignalingPolling = (sessionId: string, onData: (data: any) => void, onCandidates: (candidates: any[]) => void) => {
+  const pollingRef = useRef<NodeJS.Timeout>();
+  const lastUpdateRef = useRef<Date>(new Date(0));
+
+  const startPolling = useCallback(() => {
+    const poll = async () => {
+      try {
+        // Poll for signaling session updates
+        const sessionResult = await getSignalingSessionAction(sessionId);
+        if (sessionResult.success && sessionResult.session) {
+          const sessionDate = new Date(sessionResult.session.updatedAt);
+          if (sessionDate > lastUpdateRef.current) {
+            lastUpdateRef.current = sessionDate;
+            onData(sessionResult.session);
+          }
+        }
+
+        // Poll for ICE candidates
+        const peer1Result = await getIceCandidatesAction(sessionId, 'peer1');
+        const peer2Result = await getIceCandidatesAction(sessionId, 'peer2');
+        
+        if (peer1Result.success || peer2Result.success) {
+          const allCandidates = [
+            ...(peer1Result.success ? peer1Result.candidates : []),
+            ...(peer2Result.success ? peer2Result.candidates : [])
+          ];
+          onCandidates(allCandidates);
+        }
+      } catch (error) {
+        console.error('Error polling signaling data:', error);
+      }
+    };
+
+    poll(); // Initial poll
+    pollingRef.current = setInterval(poll, 1000); // Poll every second
+  }, [sessionId, onData, onCandidates]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = undefined;
+    }
+  }, []);
+
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  return { stopPolling };
+};
 
 export function CallView({ initialCall, allUsers }: { initialCall: Call, allUsers: User[] }) {
   const router = useRouter();
@@ -205,6 +254,8 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
   
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const peerConnectionListenersRef = useRef<Map<string, (()=>void)[]>>(new Map());
+  const lastEffectRunRef = useRef<number>(0); // Track last effect run time
+  const isEffectRunningRef = useRef<boolean>(false); // Prevent concurrent effect runs
   
   const [call, setCall] = useState<Call>(initialCall);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -241,6 +292,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         mediaRecorderRef.current.stop();
     }
 
+    // Clean up all peer connections and their polling
     peerConnectionsRef.current.forEach(pc => pc.close());
     peerConnectionsRef.current.clear();
     peerConnectionListenersRef.current.forEach(unsubs => unsubs.forEach(u => u()));
@@ -251,21 +303,17 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
       setLocalStream(null);
     }
     
-    const callDocRef = doc(db, 'calls', call.id);
-
+    // Clean up signaling sessions
     try {
-        const signalingSnapshot = await getDocs(collection(callDocRef, 'signaling'));
-        if (!signalingSnapshot.empty) {
-            const batch = writeBatch(db);
-            signalingSnapshot.forEach(doc => batch.delete(doc.ref));
-            await batch.commit();
+        const signalingSessions = Array.from(peerConnectionListenersRef.current.keys());
+        for (const sessionId of signalingSessions) {
+            await cleanupSignalingSessionAction(sessionId);
         }
     } catch (error) {
         console.error("Error cleaning up signaling documents:", error);
     }
     
     if (notify && call.status !== 'ended') {
-        await updateCallStatusAction({ callId: call.id, status: 'ended' });
     }
     
     router.push('/dashboard?view=chats');
@@ -286,7 +334,6 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
     }
     setIsRecording(false);
     setIsProcessingRecording(true);
-    await updateRecordingStatusAction({ callId: call.id, isRecording: false });
   }, [call.id]);
 
   const startRecording = useCallback(() => {
@@ -399,7 +446,9 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         formData.append('folder', 'tasktalk-recordings');
         formData.append('timestamp', String(timestamp));
         formData.append('api_key', apiKey);
-        formData.append('signature', signature);
+        if (signature) {
+            formData.append('signature', signature!);
+        }
         
         try {
             const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, {
@@ -432,13 +481,13 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
     mediaRecorderRef.current.start();
     setIsRecording(true);
     animationFrameIdRef.current = requestAnimationFrame(drawVideosToCanvas);
-  }, [localStream, remoteStreams, call.id, call.participants, toast]);
+  }, [localStream, remoteStreams, call.id, call.participants]);
 
   const handleToggleRecording = useCallback(async () => {
     if (isRecording) {
       stopRecording();
     } else {
-      await updateRecordingStatusAction({ callId: call.id, isRecording: true });
+      // await updateRecordingStatusAction({ callId: call.id, isRecording: true });
       startRecording();
     }
   }, [isRecording, stopRecording, startRecording, call.id]);
@@ -484,7 +533,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         setIsCameraOn(false);
     }
 
-    await updateScreenShareStatusAction({ callId: call.id, userId: null });
+    // await updateScreenShareStatusAction({ callId: call.id, userId: null });
     setIsScreenSharing(false);
   }, [localStream, replaceVideoTrack, call.id, localUser]);
 
@@ -507,7 +556,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
             }
 
             await replaceVideoTrack(screenTrack);
-            await updateScreenShareStatusAction({ callId: call.id, userId: localUser.id });
+            // await updateScreenShareStatusAction({ callId: call.id, userId: localUser.id });
             setIsScreenSharing(true);
             setIsCameraOn(true);
 
@@ -523,7 +572,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
             });
         }
     }
-  }, [isScreenSharing, stopScreenSharing, localStream, isCameraOn, replaceVideoTrack, toast, call.id, localUser]);
+  }, [isScreenSharing, stopScreenSharing, localStream, isCameraOn, replaceVideoTrack, call.id, localUser]);
 
   const prevIsRecordingRef = useRef(call.isRecording);
   useEffect(() => {
@@ -538,42 +587,8 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
       }
   
       prevIsRecordingRef.current = isNowRecording;
-  }, [call.isRecording, toast]);
+  }, [call.isRecording]);
 
-  useEffect(() => {
-    const callDocRef = doc(db, 'calls', initialCall.id);
-    const unsubscribe = onSnapshot(callDocRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-         const currentCall = { 
-             id: snapshot.id,
-             ...data,
-             createdAt: (data.createdAt as any)?.toDate(),
-             answeredAt: (data.answeredAt as any)?.toDate(),
-         } as Call;
-
-        if (localUser && !currentCall.participantIds.includes(localUser.id)) {
-            toast({
-                variant: 'destructive',
-                title: 'Removed from call',
-                description: 'You have been removed from the call by the host.',
-            });
-            endCall(false);
-            return;
-        }
-        
-        setCall(currentCall);
-
-        if (currentCall.status === 'ended' || currentCall.status === 'rejected' || currentCall.status === 'missed') {
-          endCall(false);
-        }
-      } else { 
-        endCall(false);
-      }
-    });
-    return () => unsubscribe();
-  }, [initialCall.id, endCall, localUser, toast]);
-  
   useEffect(() => {
     const getMedia = async () => {
       try {
@@ -592,7 +607,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         }
         setLocalStream(stream);
         if(call.status === 'ringing') {
-            await updateCallStatusAction({ callId: call.id, status: 'answered'});
+            // await updateCallStatusAction({ callId: call.id, status: 'answered'});
         }
       } catch (error) {
         console.error("Error accessing media devices.", error);
@@ -621,12 +636,12 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
     useEffect(() => {
         if (!localUser) return;
         const joinAction = async () => {
-            await updateActiveParticipantsAction({ callId: call.id, userId: localUser.id, name: localUser.name, type: 'join' });
+            // await updateActiveParticipantsAction({ callId: call.id, userId: localUser.id, name: localUser.name, type: 'join' });
         }
         joinAction();
         return () => {
             if(localUser) {
-                updateActiveParticipantsAction({ callId: call.id, userId: localUser.id, name: localUser.name, type: 'leave' });
+                // updateActiveParticipantsAction({ callId: call.id, userId: localUser.id, name: localUser.name, type: 'leave' });
             }
         };
     }, [call.id, localUser]);
@@ -634,11 +649,32 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
   useEffect(() => {
     if (!localStream || !localUser) return;
 
+    // Prevent concurrent effect runs
+    if (isEffectRunningRef.current) {
+      console.log('Effect already running, skipping');
+      return;
+    }
+    isEffectRunningRef.current = true;
+
+    // Debounce effect to prevent too frequent runs
+    const now = Date.now();
+    if (now - lastEffectRunRef.current < 1000) {
+      console.log('Skipping effect run - too frequent');
+      isEffectRunningRef.current = false;
+      return;
+    }
+    lastEffectRunRef.current = now;
+
+    // Clean up existing connections first
+    peerConnectionsRef.current.forEach(pc => pc.close());
+    peerConnectionsRef.current.clear();
+    peerConnectionListenersRef.current.forEach(unsubs => unsubs.forEach(u => u()));
+    peerConnectionListenersRef.current.clear();
+
     const servers = {
       iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }],
       iceCandidatePoolSize: 10,
     };
-    const callDocRef = doc(db, 'calls', call.id);
 
     const otherUsersInCall = call.participants.filter(p => p.id !== localUser.id);
     const otherUserIdsInCall = new Set(otherUsersInCall.map(p => p.id));
@@ -673,73 +709,150 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         };
 
         const signalingDocId = [localUser.id, peer.id].sort().join('-');
-        const signalingDocRef = doc(callDocRef, 'signaling', signalingDocId);
         const candidateBuffer: RTCIceCandidateInit[] = [];
 
         pc.onicecandidate = async event => {
             if (event.candidate) {
-                const candidatesCollectionRef = collection(signalingDocRef, localUser.id < peer.id ? 'peer1Candidates' : 'peer2Candidates');
-                await addDoc(candidatesCollectionRef, event.candidate.toJSON());
+                await addIceCandidateAction({
+                    sessionId: signalingDocId,
+                    candidate: event.candidate.toJSON(),
+                    peerType: localUser.id < peer.id ? 'peer1' : 'peer2'
+                });
             }
         };
 
-        const remoteCandidatesCollectionRef = collection(signalingDocRef, localUser.id < peer.id ? 'peer2Candidates' : 'peer1Candidates');
-        const unsubscribeCandidates = onSnapshot(remoteCandidatesCollectionRef, snapshot => {
-            snapshot.docChanges().forEach(async (change) => {
-                if (change.type === 'added') {
-                    const candidate = new RTCIceCandidate(change.doc.data());
-                     if (pc.remoteDescription) {
+        // Polling for signaling data with concurrency control
+        let isPolling = false;
+        let pollingInterval: NodeJS.Timeout | null = null;
+        
+        const pollSignaling = async () => {
+            if (isPolling) return; // Prevent concurrent polls
+            isPolling = true;
+            
+            try {
+                // Get signaling session
+                const sessionResult = await getSignalingSessionAction(signalingDocId);
+                if (sessionResult.success && sessionResult.session) {
+                    const data = sessionResult.session;
+                    
+                    const processBufferedCandidates = async () => {
+                        while (candidateBuffer.length > 0) {
+                            const candidate = candidateBuffer.shift();
+                            if(candidate) await pc.addIceCandidate(candidate);
+                        }
+                    };
+
+                    if(data.offer && data.offer.from !== localUser.id && !pc.currentRemoteDescription) {
+                        await pc.setRemoteDescription(new RTCSessionDescription(data.offer.sdp));
+                        await processBufferedCandidates();
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        await createSignalingSessionAction({ 
+                            sessionId: signalingDocId, 
+                            answer: { from: localUser.id, sdp: { type: answer.type, sdp: answer.sdp } } 
+                        });
+                    }
+
+                    if(data.answer && data.answer.from !== localUser.id && pc.signalingState !== 'stable') {
+                        await pc.setRemoteDescription(new RTCSessionDescription(data.answer.sdp));
+                        await processBufferedCandidates();
+                    }
+                }
+
+                // Get ICE candidates
+                const peer1Result = await getIceCandidatesAction(signalingDocId, 'peer1');
+                const peer2Result = await getIceCandidatesAction(signalingDocId, 'peer2');
+                
+                const allCandidates = [
+                    ...(peer1Result.success ? peer1Result.candidates : []),
+                    ...(peer2Result.success ? peer2Result.candidates : [])
+                ];
+
+                for (const candidateData of allCandidates) {
+                    const candidate = new RTCIceCandidate(candidateData.candidate);
+                    if (pc.remoteDescription) {
                         await pc.addIceCandidate(candidate);
                     } else {
                         candidateBuffer.push(candidate);
                     }
                 }
-            });
-        });
-        peerUnsubscribers.push(unsubscribeCandidates);
-
-        const unsubscribeSignaling = onSnapshot(signalingDocRef, async (snapshot) => {
-            const data = snapshot.data();
-            if(!data) return;
-
-            const processBufferedCandidates = async () => {
-                 while (candidateBuffer.length > 0) {
-                    const candidate = candidateBuffer.shift();
-                    if(candidate) await pc.addIceCandidate(candidate);
-                 }
+            } catch (error) {
+                console.error('Error polling signaling data:', error);
+                // Stop polling on error to prevent infinite loops
+                stopPolling();
+            } finally {
+                isPolling = false;
             }
+        };
 
-            if(data.offer && data.offer.from !== localUser.id && !pc.currentRemoteDescription) {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.offer.sdp));
-                await processBufferedCandidates();
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                await updateDoc(signalingDocRef, { answer: { from: localUser.id, sdp: { type: answer.type, sdp: answer.sdp } } });
+        const startPolling = () => {
+            if (pollingInterval) {
+                console.log('Polling already active for session:', signalingDocId);
+                return; // Prevent multiple intervals
             }
-
-            if(data.answer && data.answer.from !== localUser.id && pc.signalingState !== 'stable') {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.answer.sdp));
-                await processBufferedCandidates();
+            console.log('Starting polling for session:', signalingDocId);
+            pollingInterval = setInterval(pollSignaling, 5000); // Increased to 5 seconds to prevent stack overflow
+        };
+        
+        const stopPolling = () => {
+            if (pollingInterval) {
+                console.log('Stopping polling for session:', signalingDocId);
+                clearInterval(pollingInterval);
+                pollingInterval = null;
             }
-        });
-        peerUnsubscribers.push(unsubscribeSignaling);
+        };
 
+        startPolling();
+        peerUnsubscribers.push(stopPolling);
+
+        // Create initial offer if needed - wrapped in try-catch
         if (localUser.id < peer.id) {
-            getDoc(signalingDocRef).then(async docSnapshot => {
-                if (!docSnapshot.exists() || !docSnapshot.data()?.offer) {
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    await setDoc(signalingDocRef, { offer: { from: localUser.id, sdp: { type: offer.type, sdp: offer.sdp } } }, { merge: true });
+            (async () => {
+                try {
+                    const sessionResult = await getSignalingSessionAction(signalingDocId);
+                    if (!sessionResult.success || !sessionResult.session?.offer) {
+                        const offer = await pc.createOffer();
+                        await pc.setLocalDescription(offer);
+                        await createSignalingSessionAction({ 
+                            sessionId: signalingDocId, 
+                            offer: { from: localUser.id, sdp: { type: offer.type, sdp: offer.sdp } } 
+                        });
+                    }
+                } catch (error) {
+                    console.error('Error creating initial offer:', error);
                 }
-            });
+            })();
         }
         peerConnectionListenersRef.current.set(peer.id, peerUnsubscribers);
     });
 
-  }, [localStream, localUser, call.id, call.participants, toast]);
+    // Cleanup function
+    return () => {
+        peerConnectionsRef.current.forEach(pc => pc.close());
+        peerConnectionsRef.current.clear();
+        peerConnectionListenersRef.current.forEach(unsubs => unsubs.forEach(u => u()));
+        peerConnectionListenersRef.current.clear();
+        isEffectRunningRef.current = false; // Reset the flag
+    };
+
+  }, [localStream, localUser, call.id, call.participants.length]);
   
 
     useEffect(() => {
+        // Prevent concurrent audio analysis runs
+        if (isEffectRunningRef.current) {
+            return;
+        }
+        isEffectRunningRef.current = true;
+
+        // Debounce audio analysis to prevent too frequent runs
+        const now = Date.now();
+        if (now - lastEffectRunRef.current < 500) {
+            isEffectRunningRef.current = false;
+            return;
+        }
+        lastEffectRunRef.current = now;
+
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const remoteStreamEntries = Array.from(remoteStreams.entries());
     
@@ -796,8 +909,9 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
             if (audioContext.state !== 'closed') {
                 audioContext.close();
             }
+            isEffectRunningRef.current = false; // Reset the flag
         };
-    }, [remoteStreams]);
+    }, [remoteStreams.size]); // Use size instead of the Map object
 
   const toggleMic = useCallback(() => {
     if (!localStream) return;
@@ -823,11 +937,11 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
     });
     setIsRemovingParticipant(null);
 
-    if (result.error) {
+    if (!result.success) {
         toast({
             variant: 'destructive',
             title: 'Error',
-            description: result.error
+            description: 'Failed to remove participant. Please try again.'
         });
     }
   };
@@ -841,8 +955,8 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
         requesterId: localUser.id
     });
     setIsAddingParticipant(null);
-    if (result.error) {
-        toast({ variant: 'destructive', title: 'Error adding user', description: result.error });
+    if (!result.success) {
+        toast({ variant: 'destructive', title: 'Error adding user', description: 'Failed to add user. Please try again.' });
     } else {
         toast({ description: `${allUsers.find(u => u.id === userId)?.name || 'User'} has been invited.` });
     }
@@ -852,7 +966,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
   const otherParticipants = useMemo(() => {
     if (!localUser) return [];
     return call.participants.filter(p => p.id !== localUser.id);
-  }, [localUser, call.participants]);
+  }, [localUser, call.participants.length]);
   
   const isSomeoneElseSharing = call.screenSharerId && call.screenSharerId !== localUser?.id;
   
@@ -899,7 +1013,7 @@ export function CallView({ initialCall, allUsers }: { initialCall: Call, allUser
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <span tabIndex={isSomeoneElseSharing ? 0 : -1}>
-                                <Button onClick={toggleScreenShare} variant="secondary" size="lg" className={cn("rounded-full h-14 w-14 p-4", isScreenSharing && "bg-blue-600 hover:bg-blue-500")} disabled={!localStream || isEndingCall || isSomeoneElseSharing}>
+                                <Button onClick={toggleScreenShare} variant="secondary" size="lg" className={cn("rounded-full h-14 w-14 p-4", isScreenSharing && "bg-blue-600 hover:bg-blue-500")} disabled={!localStream || isEndingCall || !!isSomeoneElseSharing}>
                                     {isScreenSharing ? <ScreenShareOff /> : <ScreenShare />}
                                 </Button>
                             </span>

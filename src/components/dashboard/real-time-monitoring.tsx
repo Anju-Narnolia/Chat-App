@@ -43,8 +43,8 @@ export function RealTimeMonitoring() {
   const [activeViewers, setActiveViewers] = React.useState<Set<string>>(new Set());
 
   React.useEffect(() => {
-
-  }, [toast]);
+    // This effect can be removed if not needed
+  }, []);
 
   const filteredUsers = React.useMemo(() => {
     if (!searchQuery) return users;

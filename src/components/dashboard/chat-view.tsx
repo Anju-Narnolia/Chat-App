@@ -68,11 +68,13 @@ function getDirectChatDisplay(
   if (conversation.isGroup) {
     return { name: conversation.name, image: conversation.image };
   }
-  const otherUserId = conversation.participantIds.find((id: string) => id !== currentUser?.id);
-  const otherUser = users.find(u => u.id === otherUserId);
+  const otherUserId = conversation.participantIds.find(
+    (id: string) => id !== currentUser?.id
+  );
+  const otherUser = users.find((u) => u.id === otherUserId);
   return {
-    name: otherUser?.name || 'Unknown',
-    image: otherUser?.image || ''
+    name: otherUser?.name || "Unknown",
+    image: otherUser?.image || "",
   };
 }
 
@@ -234,6 +236,12 @@ export function ChatView({ users }: { users: User[] }) {
   const [isMuted, setIsMuted] = useState(false);
   const [isCallPanelOpen, setIsCallPanelOpen] = useState(false);
   const [isRinging, setIsRinging] = useState(false);
+  const [incomingCall, setIncomingCall] = useState<{
+    id: string;
+    caller: User;
+    type: 'audio' | 'video';
+    chatId: string;
+  } | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
@@ -241,16 +249,18 @@ export function ChatView({ users }: { users: User[] }) {
 
   const otherUsers = useMemo(
     () => users.filter((user) => user.id !== currentUser?.id),
-    [users, currentUser]
+    [users, currentUser?.id]
   );
 
-  const selectedConversationDisplay = selectedConversation
-    ? getDirectChatDisplay(selectedConversation, users, currentUser)
-    : { name: '', image: '' };
+  const selectedConversationDisplay = useMemo(() => {
+    return selectedConversation
+      ? getDirectChatDisplay(selectedConversation, users, currentUser)
+      : { name: "", image: "" };
+  }, [selectedConversation, users, currentUser?.id]);
 
   // Load conversations on mount
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser?.id) return;
 
     const loadConversations = async () => {
       setIsLoading(true);
@@ -265,7 +275,7 @@ export function ChatView({ users }: { users: User[] }) {
     };
 
     loadConversations();
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   // Load messages when conversation is selected
   useEffect(() => {
@@ -294,7 +304,7 @@ export function ChatView({ users }: { users: User[] }) {
 
   // Search users with debouncing
   useEffect(() => {
-    if (!currentUser || !searchTerm.trim()) {
+    if (!currentUser?.id || !searchTerm.trim()) {
       setSearchResults([]);
       return;
     }
@@ -320,7 +330,7 @@ export function ChatView({ users }: { users: User[] }) {
         clearTimeout(searchTimeoutRef.current);
       }
     };
-  }, [searchTerm, currentUser]);
+  }, [searchTerm, currentUser?.id]);
 
   // Play/stop ringtone logic
   useEffect(() => {
@@ -463,8 +473,7 @@ export function ChatView({ users }: { users: User[] }) {
   // Simulate call flow for demo (replace with real signaling logic)
   const handleStartCall = async (video: boolean) => {
     if (!selectedConversation || !currentUser) return;
-    setIsRinging(true); // Start ringing for outgoing call
-
+    
     if (window.location.pathname.startsWith("/dashboard/call/")) {
       toast({
         variant: "destructive",
@@ -473,6 +482,12 @@ export function ChatView({ users }: { users: User[] }) {
       });
       return;
     }
+
+    // Show outgoing call notification
+    toast({
+      title: "Calling...",
+      description: `Calling ${selectedConversationDisplay.name}...`,
+    });
 
     try {
       const result = await startCallAction({
@@ -487,6 +502,27 @@ export function ChatView({ users }: { users: User[] }) {
       });
 
       if (result.success && result.callId) {
+        // Start ringing for outgoing call
+        setIsRinging(true);
+        
+        // Simulate call being answered after 3 seconds
+        setTimeout(() => {
+          setIsRinging(false);
+          setIsCallPanelOpen(true);
+          
+          // Add call started notification to chat
+          const callMessage: Message = {
+            id: Date.now().toString(),
+            text: `Call started`,
+            senderId: currentUser.id,
+            receiverId: selectedConversation.id,
+            timestamp: new Date(),
+            isCallNotification: true,
+          };
+          
+          setMessages(prev => [...prev, callMessage]);
+        }, 3000);
+        
         router.push(`/dashboard/call/${result.callId}`);
       } else {
         toast({
@@ -502,12 +538,6 @@ export function ChatView({ users }: { users: User[] }) {
         description: "Could not start the call. Please try again.",
       });
     }
-
-    // After call is answered (simulate with timeout for now):
-    setTimeout(() => {
-      setIsRinging(false);
-      setIsCallPanelOpen(true);
-    }, 3000); // Simulate 3s ring, replace with real answer event
   };
 
   const handleAnswerCall = () => {
@@ -518,6 +548,26 @@ export function ChatView({ users }: { users: User[] }) {
   const handleEndCall = () => {
     setIsCallPanelOpen(false);
     setIsRinging(false);
+    setIncomingCall(null);
+    
+    if (selectedConversation && currentUser) {
+      // Add call ended notification
+      const callMessage: Message = {
+        id: Date.now().toString(),
+        text: `Call ended`,
+        senderId: currentUser.id,
+        receiverId: selectedConversation.id,
+        timestamp: new Date(),
+        isCallNotification: true,
+      };
+      
+      setMessages(prev => [...prev, callMessage]);
+    }
+    
+    toast({
+      title: "Call Ended",
+      description: "The call has been ended.",
+    });
   };
 
   const formatTimestamp = (timestamp: Date | undefined) => {
@@ -537,6 +587,97 @@ export function ChatView({ users }: { users: User[] }) {
       convo.name?.toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [searchTerm, conversations]);
+
+  // Compute display values for conversations once per render
+  const conversationDisplays = useMemo(() => {
+    return filteredConversations.map((convo) => ({
+      ...convo,
+      display: getDirectChatDisplay(convo, users, currentUser)
+    }));
+  }, [filteredConversations, users, currentUser?.id]);
+
+  // Handle incoming call
+  const handleIncomingCall = (callData: {
+    id: string;
+    caller: User;
+    type: 'audio' | 'video';
+    chatId: string;
+  }) => {
+    setIncomingCall(callData);
+    setIsRinging(true);
+    
+    // Show notification
+    toast({
+      title: "Incoming Call",
+      description: `${callData.caller.name} is calling you...`,
+    });
+  };
+
+  // Accept incoming call
+  const handleAcceptCall = async () => {
+    if (!incomingCall || !currentUser) return;
+    
+    setIsRinging(false);
+    setIncomingCall(null);
+    setIsCallPanelOpen(true);
+    
+    // Add call notification message to chat
+    const callMessage: Message = {
+      id: Date.now().toString(),
+      text: `Call started`,
+      senderId: currentUser.id,
+      receiverId: incomingCall.chatId,
+      timestamp: new Date(),
+      isCallNotification: true,
+    };
+    
+    setMessages(prev => [...prev, callMessage]);
+    
+    toast({
+      title: "Call Accepted",
+      description: "You joined the call successfully.",
+    });
+  };
+
+  // Reject incoming call
+  const handleRejectCall = async () => {
+    if (!incomingCall || !currentUser) return;
+    
+    setIsRinging(false);
+    setIncomingCall(null);
+    
+    // Add call notification message to chat
+    const callMessage: Message = {
+      id: Date.now().toString(),
+      text: `Call declined`,
+      senderId: currentUser.id,
+      receiverId: incomingCall.chatId,
+      timestamp: new Date(),
+      isCallNotification: true,
+    };
+    
+    setMessages(prev => [...prev, callMessage]);
+    
+    toast({
+      title: "Call Declined",
+      description: "You declined the incoming call.",
+    });
+  };
+
+  // Demo function to simulate incoming call (for testing)
+  const simulateIncomingCall = () => {
+    if (!users.length || !currentUser) return;
+    
+    const otherUser = users.find(u => u.id !== currentUser.id);
+    if (!otherUser) return;
+    
+    handleIncomingCall({
+      id: Date.now().toString(),
+      caller: otherUser,
+      type: 'audio',
+      chatId: selectedConversation?.id || 'demo-chat',
+    });
+  };
 
   return (
     <div
@@ -610,13 +751,7 @@ export function ChatView({ users }: { users: User[] }) {
                       <p className="px-2 mb-2 text-xs font-semibold text-muted-foreground tracking-wider uppercase">
                         Recent Conversations
                       </p>
-                      {filteredConversations.map((convo) => {
-                        const { name: displayName, image: displayImage } = getDirectChatDisplay(convo, users, currentUser);
-                        const lastMessageText =
-                          convo.lastMessageSenderId === currentUser?.id
-                            ? `You: ${convo.lastMessageText}`
-                            : convo.lastMessageText;
-
+                      {conversationDisplays.map((convo) => {
                         return (
                           <div
                             key={convo.id}
@@ -629,13 +764,17 @@ export function ChatView({ users }: { users: User[] }) {
                             )}
                           >
                             <ConversationAvatar
-                              conversation={{ ...convo, name: displayName, image: displayImage }}
+                              conversation={{
+                                ...convo,
+                                name: convo.display.name,
+                                image: convo.display.image,
+                              }}
                               users={users}
                             />
                             <div className="flex-1 overflow-hidden">
                               <div className="flex items-center gap-2">
                                 <p className="font-semibold truncate">
-                                  {displayName}
+                                  {convo.display.name}
                                 </p>
                                 {convo.isGroup && (
                                   <Badge variant="outline" className="text-xs">
@@ -644,7 +783,7 @@ export function ChatView({ users }: { users: User[] }) {
                                 )}
                               </div>
                               <p className="text-sm text-muted-foreground truncate">
-                                {lastMessageText || "No messages yet"}
+                                {convo.lastMessageText || "No messages yet"}
                               </p>
                             </div>
                             <time className="text-xs text-muted-foreground self-start mt-1">
@@ -654,7 +793,7 @@ export function ChatView({ users }: { users: User[] }) {
                         );
                       })}
 
-                      {filteredConversations.length === 0 && !searchTerm && (
+                      {conversationDisplays.length === 0 && !searchTerm && (
                         <div className="p-4 text-center text-muted-foreground">
                           <MessageSquare className="h-8 w-8 mx-auto mb-2" />
                           <p className="text-sm">No conversations yet</p>
@@ -678,9 +817,18 @@ export function ChatView({ users }: { users: User[] }) {
           {/* Header */}
           <div className="flex items-center justify-between border-b p-3 flex-shrink-0">
             <div className="flex items-center gap-3">
-              <ConversationAvatar conversation={{ ...selectedConversation, name: selectedConversationDisplay.name, image: selectedConversationDisplay.image }} users={users} />
+              <ConversationAvatar
+                conversation={{
+                  ...selectedConversation,
+                  name: selectedConversationDisplay.name,
+                  image: selectedConversationDisplay.image,
+                }}
+                users={users}
+              />
               <div>
-                <p className="font-semibold">{selectedConversationDisplay.name}</p>
+                <p className="font-semibold">
+                  {selectedConversationDisplay.name}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   {selectedConversation.isGroup
                     ? `${selectedConversation.participantIds.length} members`
@@ -755,19 +903,54 @@ export function ChatView({ users }: { users: User[] }) {
               <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-8 flex flex-col items-center">
                 <p className="text-lg font-bold mb-4">Call in Progress</p>
                 <div className="flex gap-4 mb-4">
-                  <Button onClick={handleEndCall} className="bg-red-500 hover:bg-red-600 text-white">End Call</Button>
+                  <Button
+                    onClick={handleEndCall}
+                    className="bg-red-500 hover:bg-red-600 text-white"
+                  >
+                    End Call
+                  </Button>
                   {/* Add mute, video toggle, etc. here */}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Incoming call notification (simulate for demo) */}
-          {isRinging && !isCallPanelOpen && (
-            <div className="fixed top-8 left-1/2 -translate-x-1/2 z-50 bg-white dark:bg-gray-900 border rounded-lg shadow-lg px-6 py-4 flex items-center gap-4">
-              <span className="font-semibold">Ringing...</span>
-              <Button onClick={handleAnswerCall} className="bg-green-500 hover:bg-green-600 text-white">Answer</Button>
-              <Button onClick={handleEndCall} className="bg-red-500 hover:bg-red-600 text-white">Decline</Button>
+          {/* Incoming call notification */}
+          {incomingCall && isRinging && !isCallPanelOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+              <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-8 flex flex-col items-center max-w-sm w-full mx-4">
+                <div className="flex items-center gap-4 mb-6">
+                  <Avatar className="h-16 w-16">
+                    <AvatarImage src={incomingCall.caller.image} alt={incomingCall.caller.name} />
+                    <AvatarFallback>{incomingCall.caller.name?.charAt(0)}</AvatarFallback>
+                  </Avatar>
+                  <div className="text-center">
+                    <p className="text-lg font-semibold">{incomingCall.caller.name}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {incomingCall.type === 'video' ? 'Video Call' : 'Audio Call'}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex gap-4 w-full">
+                  <Button
+                    onClick={handleAcceptCall}
+                    className="flex-1 bg-green-500 hover:bg-green-600 text-white"
+                    size="lg"
+                  >
+                    <Phone className="h-5 w-5 mr-2" />
+                    Accept
+                  </Button>
+                  <Button
+                    onClick={handleRejectCall}
+                    className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+                    size="lg"
+                  >
+                    <Phone className="h-5 w-5 mr-2 rotate-90" />
+                    Decline
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -949,7 +1132,12 @@ export function ChatView({ users }: { users: User[] }) {
       )}
 
       {/* Ringtone audio element (hidden) */}
-      <audio ref={audioRef} src="/sound/ringtone.wav" loop style={{ display: 'none' }} />
+      <audio
+        ref={audioRef}
+        src="/sound/ringtone.wav"
+        loop
+        style={{ display: "none" }}
+      />
     </div>
   );
 }

@@ -16,6 +16,8 @@ import ScreenViewLog from '@/lib/models/ScreenViewLog';
 import Conversation from '@/lib/models/Conversation';
 import Task from '@/lib/models/Task';
 import Message from '@/lib/models/Message';
+import SignalingSession from '@/lib/models/SignalingSession';
+import IceCandidate from '@/lib/models/IceCandidate';
 
 export async function startScreenSharingAction(userId: string): Promise<{ success?: boolean; error?: string }> {
     try {
@@ -1343,18 +1345,17 @@ export async function searchUsersAction(query: string, currentUserId: string): P
     try {
         await connectDB();
         
-        if (!query.trim()) {
-            return [];
-        }
-        
-        // Search users by name or email, excluding current user
         const users = await User.find({
-            _id: { $ne: currentUserId },
-            $or: [
-                { name: { $regex: query, $options: 'i' } },
-                { email: { $regex: query, $options: 'i' } }
+            $and: [
+                { _id: { $ne: currentUserId } },
+                {
+                    $or: [
+                        { name: { $regex: query, $options: 'i' } },
+                        { email: { $regex: query, $options: 'i' } }
+                    ]
+                }
             ]
-        }).limit(10);
+        }).select('name email image role').limit(10);
         
         return users.map(user => ({
             id: user._id.toString(),
@@ -1363,9 +1364,129 @@ export async function searchUsersAction(query: string, currentUserId: string): P
             image: user.image,
             role: user.role
         }));
-        
     } catch (error) {
         console.error('Error searching users:', error);
         return [];
+    }
+}
+
+// WebRTC Signaling Actions for MongoDB
+export async function createSignalingSessionAction(data: { 
+    sessionId: string; 
+    offer?: { from: string; sdp: any }; 
+    answer?: { from: string; sdp: any }; 
+}) {
+    try {
+        await connectDB();
+        
+        const { sessionId, offer, answer } = data;
+        
+        // Create or update signaling session
+        const session = await SignalingSession.findOneAndUpdate(
+            { sessionId },
+            { 
+                sessionId,
+                offer: offer || null,
+                answer: answer || null,
+                updatedAt: new Date()
+            },
+            { upsert: true, new: true }
+        );
+        
+        return { success: true, sessionId: session.sessionId };
+    } catch (error) {
+        console.error('Error creating signaling session:', error);
+        return { error: 'Failed to create signaling session' };
+    }
+}
+
+export async function addIceCandidateAction(data: { 
+    sessionId: string; 
+    candidate: any; 
+    peerType: 'peer1' | 'peer2'; 
+}) {
+    try {
+        await connectDB();
+        
+        const { sessionId, candidate, peerType } = data;
+        
+        const iceCandidate = new IceCandidate({
+            sessionId,
+            candidate,
+            peerType,
+            createdAt: new Date()
+        });
+        
+        await iceCandidate.save();
+        
+        return { success: true, candidateId: iceCandidate._id.toString() };
+    } catch (error) {
+        console.error('Error adding ICE candidate:', error);
+        return { error: 'Failed to add ICE candidate' };
+    }
+}
+
+export async function getSignalingSessionAction(sessionId: string) {
+    try {
+        await connectDB();
+        
+        const session = await SignalingSession.findOne({ sessionId });
+        if (!session) {
+            return { error: 'Signaling session not found' };
+        }
+        
+        return { 
+            success: true, 
+            session: {
+                sessionId: session.sessionId,
+                offer: session.offer,
+                answer: session.answer,
+                updatedAt: session.updatedAt
+            }
+        };
+    } catch (error) {
+        console.error('Error getting signaling session:', error);
+        return { error: 'Failed to get signaling session' };
+    }
+}
+
+export async function getIceCandidatesAction(sessionId: string, peerType: 'peer1' | 'peer2') {
+    try {
+        await connectDB();
+        
+        const candidates = await IceCandidate.find({ 
+            sessionId, 
+            peerType 
+        }).sort({ createdAt: 1 });
+        
+        return { 
+            success: true, 
+            candidates: candidates.map(c => ({
+                id: c._id.toString(),
+                candidate: c.candidate,
+                peerType: c.peerType,
+                createdAt: c.createdAt
+            }))
+        };
+    } catch (error) {
+        console.error('Error getting ICE candidates:', error);
+        return { error: 'Failed to get ICE candidates' };
+    }
+}
+
+export async function cleanupSignalingSessionAction(sessionId: string) {
+    try {
+        await connectDB();
+        
+        // Delete signaling session
+        await SignalingSession.deleteOne({ sessionId });
+        
+        // Delete all ICE candidates for this session
+        await IceCandidate.deleteMany({ sessionId });
+        
+        return { success: true };
+    } catch (error) {
+        console.error('Error cleaning up signaling session:', error);
+        return { error: 'Failed to cleanup signaling session' };
     }
 }
